@@ -13,7 +13,7 @@ from core.data_service import (
     get_impedance_data,
 )
 
-
+from side_bar_data_selection import get_available_signals
 def render_data_module():
 
     st.title("📊 Data System")
@@ -225,6 +225,15 @@ def render_data_module():
         st.write("**Battery Unit:**", unit_id)
         st.write("**Cycle:**", cycle_index)
         st.write("**Signal:**", signal_name)
+        available_debug_signals = get_available_signals(
+            dataset_id=dataset_id,
+            unit_id=unit_id,
+            cycle_index=cycle_index,
+        )
+
+        with st.expander("Debug: available signals for selected cycle"):
+            st.write(available_debug_signals)
+            st.write("Selected signal:", signal_name)
 
         if signal_name is None:
             st.warning("No signal available for the selected cycle.")

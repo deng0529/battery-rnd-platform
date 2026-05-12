@@ -90,6 +90,7 @@ def render_modelling_module():
 
         try:
             aging_df = get_aging_data(dataset_id, unit_id)
+
         except Exception as e:
             st.error(f"Failed to load aging data: {e}")
             return
