@@ -12,7 +12,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 
 # =========================================================
-# Utility metrics
+# Metrics
 # =========================================================
 
 def rmse(y_true, y_pred):
@@ -31,7 +31,9 @@ def safe_mape(y_true, y_pred):
     if mask.sum() == 0:
         return None
 
-    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
+    return float(
+        np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+    )
 
 
 # =========================================================
@@ -51,7 +53,7 @@ class RULSOHExperimentConfig:
 
 
 # =========================================================
-# Feature preparation
+# Feature Engineering
 # =========================================================
 
 class BatteryFeatureEngineer:
@@ -59,15 +61,6 @@ class BatteryFeatureEngineer:
         self.eol_threshold = eol_threshold
 
     def prepare_aging_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Required minimum columns:
-        cycle_index, capacity
-
-        Optional columns:
-        temperature_mean, temperature_max, voltage_mean, voltage_min,
-        voltage_max, time_duration
-        """
-
         if df.empty:
             raise ValueError("Input aging dataframe is empty.")
 
@@ -143,7 +136,7 @@ class BatteryFeatureEngineer:
 
 
 # =========================================================
-# Physical model
+# Physical Model
 # SOH(k) = 1 - a*sqrt(k) - b*k
 # =========================================================
 
@@ -219,13 +212,86 @@ class CapacityDegradationPhysicalModel:
 
 
 # =========================================================
-# GRU network
-# Multi-task output: SOH + RUL
+# Optional Exponential Physical Model
+# =========================================================
+
+class ExponentialPhysicalModel:
+    name = "Exponential degradation model"
+
+    def __init__(self, eol_threshold: float = 0.7):
+        self.eol_threshold = eol_threshold
+        self.params = None
+
+    @staticmethod
+    def degradation_function(k, a, b):
+        k = np.maximum(k, 1)
+        return 1 - a * (1 - np.exp(-b * k))
+
+    def fit(self, train_df: pd.DataFrame):
+        k = train_df["cycle_index"].values.astype(float)
+        soh = train_df["soh"].values.astype(float)
+
+        self.params, _ = curve_fit(
+            self.degradation_function,
+            k,
+            soh,
+            p0=[0.3, 0.001],
+            bounds=([0, 0], [1, 1]),
+            maxfev=20000,
+        )
+
+        return self
+
+    def predict_soh(self, cycle_index):
+        if self.params is None:
+            raise RuntimeError("Exponential physical model is not fitted.")
+
+        return self.degradation_function(
+            np.asarray(cycle_index, dtype=float),
+            *self.params,
+        )
+
+    def predict_rul_single(self, current_cycle: int, max_search_cycle: int = 3000):
+        future_cycles = np.arange(current_cycle, max_search_cycle + 1)
+        future_soh = self.predict_soh(future_cycles)
+
+        below = np.where(future_soh <= self.eol_threshold)[0]
+
+        if len(below) == 0:
+            return max_search_cycle - current_cycle
+
+        eol_cycle = future_cycles[below[0]]
+        return max(int(eol_cycle - current_cycle), 0)
+
+    def predict_rul(self, cycle_index):
+        return np.array([
+            self.predict_rul_single(int(k))
+            for k in cycle_index
+        ])
+
+    def predict(self, test_df: pd.DataFrame):
+        cycle_index = test_df["cycle_index"].values
+
+        return pd.DataFrame({
+            "cycle_index": cycle_index,
+            "true_soh": test_df["soh"].values,
+            "true_rul": test_df["rul"].values,
+            "pred_soh": self.predict_soh(cycle_index),
+            "pred_rul": self.predict_rul(cycle_index),
+            "model": self.name,
+        })
+
+
+# =========================================================
+# GRU Network
 # =========================================================
 
 class GRUNetwork(nn.Module):
     def __init__(self, input_size: int, hidden_size: int = 64):
         super().__init__()
+
+        if not isinstance(input_size, int):
+            raise TypeError(f"input_size should be int, got {type(input_size)}")
 
         self.gru = nn.GRU(
             input_size=input_size,
@@ -245,15 +311,19 @@ class GRUNetwork(nn.Module):
         return self.head(last)
 
 
-class GRURULSOHModel:
+# =========================================================
+# GRU AI Model
+# =========================================================
+
+class GRUBatteryModel:
     name = "GRU model"
 
     def __init__(self, config: RULSOHExperimentConfig):
         self.config = config
         self.model = None
         self.feature_cols = None
-        self.scaler_x = None
-        self.scaler_y = None
+        self.scaler_x = StandardScaler()
+        self.scaler_y = StandardScaler()
         self.feature_engineer = BatteryFeatureEngineer(config.eol_threshold)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -263,10 +333,10 @@ class GRURULSOHModel:
 
         self.feature_cols = self.feature_engineer.get_feature_columns(df)
 
-        target_cols = ["soh", "rul"]
+        if not self.feature_cols:
+            raise ValueError("No valid feature columns found for GRU model.")
 
-        self.scaler_x = StandardScaler()
-        self.scaler_y = StandardScaler()
+        target_cols = ["soh", "rul"]
 
         df[self.feature_cols] = self.scaler_x.fit_transform(df[self.feature_cols])
         df[target_cols] = self.scaler_y.fit_transform(df[target_cols])
@@ -283,8 +353,10 @@ class GRURULSOHModel:
 
         torch.manual_seed(self.config.random_seed)
 
+        input_size = int(len(self.feature_cols))
+
         self.model = GRUNetwork(
-            input_size=len(self.feature_cols),
+            input_size=input_size,
             hidden_size=self.config.hidden_size,
         ).to(self.device)
 
@@ -360,16 +432,25 @@ class GRURULSOHModel:
         })
 
 
+# Backward compatibility
+GRURULSOHModel = GRUBatteryModel
+
+
 # =========================================================
-# Hybrid: physical outputs as GRU features
+# Hybrid: Physical features + GRU
 # =========================================================
 
-class HybridPhysicalGRUModel(GRURULSOHModel):
+class HybridPhysicalGRUModel(GRUBatteryModel):
     name = "Physical + GRU hybrid model"
 
-    def __init__(self, config: RULSOHExperimentConfig):
+    def __init__(
+        self,
+        config: RULSOHExperimentConfig,
+        physical_model_class=CapacityDegradationPhysicalModel,
+        ai_model_class=None,
+    ):
         super().__init__(config)
-        self.physical_model = CapacityDegradationPhysicalModel(
+        self.physical_model = physical_model_class(
             eol_threshold=config.eol_threshold
         )
 
@@ -388,12 +469,12 @@ class HybridPhysicalGRUModel(GRURULSOHModel):
 
     def fit(self, train_df: pd.DataFrame):
         self.physical_model.fit(train_df)
-        train_df = self._add_physical_features(train_df)
-        return super().fit(train_df)
+        train_df_with_physics = self._add_physical_features(train_df)
+        return super().fit(train_df_with_physics)
 
     def predict(self, test_df: pd.DataFrame):
-        test_df = self._add_physical_features(test_df)
-        result = super().predict(test_df)
+        test_df_with_physics = self._add_physical_features(test_df)
+        result = super().predict(test_df_with_physics)
         result["model"] = self.name
         return result
 
@@ -421,7 +502,10 @@ class RULSOHExperimentRunner:
             "SOH MAE": mae(pred_df["true_soh"], pred_df["pred_soh"]),
             "RUL RMSE": rmse(pred_df["true_rul"], pred_df["pred_rul"]),
             "RUL MAE": mae(pred_df["true_rul"], pred_df["pred_rul"]),
-            "RUL MAPE (%)": safe_mape(pred_df["true_rul"], pred_df["pred_rul"]),
+            "RUL MAPE (%)": safe_mape(
+                pred_df["true_rul"],
+                pred_df["pred_rul"],
+            ),
         }
 
     def build_health_summary(self, df: pd.DataFrame):
@@ -457,10 +541,10 @@ class RULSOHExperimentRunner:
         }
 
     def prepare_feature_preview(
-            self,
-            aging_df: pd.DataFrame,
-            dataset_id: str,
-            unit_id: str,
+        self,
+        aging_df: pd.DataFrame,
+        dataset_id: str,
+        unit_id: str,
     ):
         df = self.feature_engineer.prepare_aging_dataframe(aging_df)
 
@@ -473,13 +557,13 @@ class RULSOHExperimentRunner:
         return df
 
     def run(
-            self,
-            aging_df: pd.DataFrame,
-            dataset_id: str,
-            unit_id: str,
-            physical_model_class,
-            ai_model_class,
-            hybrid_model_class,
+        self,
+        aging_df: pd.DataFrame,
+        dataset_id: str,
+        unit_id: str,
+        physical_model_class,
+        ai_model_class,
+        hybrid_model_class,
     ):
         df = self.feature_engineer.prepare_aging_dataframe(aging_df)
 
@@ -531,11 +615,7 @@ class RULSOHExperimentRunner:
             model_metrics["Model"] = model.name
             metrics.append(model_metrics)
 
-        prediction_df = pd.concat(
-            predictions,
-            ignore_index=True,
-        )
-
+        prediction_df = pd.concat(predictions, ignore_index=True)
         metrics_df = pd.DataFrame(metrics)
 
         if "Model" in metrics_df.columns:

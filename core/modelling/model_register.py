@@ -1,7 +1,7 @@
 from core.modelling.rul_soh_test import (
     CapacityDegradationPhysicalModel,
-    # ExponentialPhysicalModel,
-    GRUNetwork,
+    ExponentialPhysicalModel,
+    GRUBatteryModel,
     HybridPhysicalGRUModel,
 )
 
@@ -11,17 +11,17 @@ PHYSICAL_MODEL_REGISTRY = {
         "display_name": "Capacity degradation curve",
         "class": CapacityDegradationPhysicalModel,
     },
-    # "exponential_degradation": {
-    #     "display_name": "Exponential degradation model",
-    #     "class": ExponentialPhysicalModel,
-    # },
+    "exponential_degradation": {
+        "display_name": "Exponential degradation model",
+        "class": ExponentialPhysicalModel,
+    },
 }
 
 
 AI_MODEL_REGISTRY = {
     "gru": {
         "display_name": "GRU neural network",
-        "class": GRUNetwork,
+        "class": GRUBatteryModel,
     },
 }
 
