@@ -456,98 +456,65 @@ class RULSOHExperimentRunner:
             "Recent Avg Fade Rate": round(recent_fade_rate, 6),
         }
 
+    def prepare_feature_preview(
+            self,
+            aging_df: pd.DataFrame,
+            dataset_id: str,
+            unit_id: str,
+    ):
+        df = self.feature_engineer.prepare_aging_dataframe(aging_df)
+
+        df["dataset_id"] = dataset_id
+        df["unit_id"] = unit_id
+
+        if "cycle_type" not in df.columns:
+            df["cycle_type"] = "discharge"
+
+        return df
+
     def run(
             self,
             aging_df: pd.DataFrame,
-            selected_model_keys: list[str],
-            model_registry: dict,
+            dataset_id: str,
+            unit_id: str,
+            physical_model_class,
+            ai_model_class,
+            hybrid_model_class,
     ):
-        """
-        Run selected SOH/RUL models using model registry.
-
-        Parameters
-        ----------
-        aging_df:
-            Raw aging dataframe from database.
-            Must contain at least:
-            - cycle_index
-            - capacity
-
-        selected_model_keys:
-            List of selected model keys from MODEL_REGISTRY, e.g.
-            ["physical_capacity", "gru", "hybrid_physical_gru"]
-
-        model_registry:
-            MODEL_REGISTRY dictionary, e.g.
-            {
-                "physical_capacity": {"display_name": "...", "class": ...},
-                "gru": {"display_name": "...", "class": ...}
-            }
-
-        Returns
-        -------
-        dict with:
-            prepared_data
-            train_data
-            test_data
-            predictions
-            metrics
-            health_summary
-        """
-
-        # -------------------------------------------------
-        # 1. Prepare SOH / RUL labels
-        # -------------------------------------------------
         df = self.feature_engineer.prepare_aging_dataframe(aging_df)
+
+        df["dataset_id"] = dataset_id
+        df["unit_id"] = unit_id
+
+        if "cycle_type" not in df.columns:
+            df["cycle_type"] = "discharge"
 
         if df.empty:
             raise ValueError("Prepared aging dataframe is empty.")
 
-        # -------------------------------------------------
-        # 2. Train / test split by time order
-        # -------------------------------------------------
         train_df, test_df = self.train_test_split_by_time(df)
 
         if train_df.empty or test_df.empty:
             raise ValueError("Train or test data is empty. Please check train_ratio.")
 
-        # -------------------------------------------------
-        # 3. Validate selected models
-        # -------------------------------------------------
-        if not selected_model_keys:
-            raise ValueError("No model selected.")
+        physical_model = physical_model_class(
+            eol_threshold=self.config.eol_threshold
+        )
 
-        unknown_keys = [
-            key for key in selected_model_keys
-            if key not in model_registry
+        ai_model = ai_model_class(self.config)
+
+        hybrid_model = hybrid_model_class(
+            config=self.config,
+            physical_model_class=physical_model_class,
+            ai_model_class=ai_model_class,
+        )
+
+        models = [
+            physical_model,
+            ai_model,
+            hybrid_model,
         ]
 
-        if unknown_keys:
-            raise ValueError(f"Unknown model keys: {unknown_keys}")
-
-        # -------------------------------------------------
-        # 4. Instantiate models from registry
-        # -------------------------------------------------
-        models = []
-
-        for key in selected_model_keys:
-            model_class = model_registry[key]["class"]
-
-            # Physical model usually only needs eol_threshold
-            if key == "physical_capacity":
-                model = model_class(
-                    eol_threshold=self.config.eol_threshold
-                )
-
-            # AI / hybrid models use full config
-            else:
-                model = model_class(self.config)
-
-            models.append(model)
-
-        # -------------------------------------------------
-        # 5. Fit, predict and evaluate each model
-        # -------------------------------------------------
         predictions = []
         metrics = []
 
@@ -564,9 +531,6 @@ class RULSOHExperimentRunner:
             model_metrics["Model"] = model.name
             metrics.append(model_metrics)
 
-        # -------------------------------------------------
-        # 6. Combine results
-        # -------------------------------------------------
         prediction_df = pd.concat(
             predictions,
             ignore_index=True,
@@ -574,14 +538,10 @@ class RULSOHExperimentRunner:
 
         metrics_df = pd.DataFrame(metrics)
 
-        # Put Model column first
         if "Model" in metrics_df.columns:
             cols = ["Model"] + [c for c in metrics_df.columns if c != "Model"]
             metrics_df = metrics_df[cols]
 
-        # -------------------------------------------------
-        # 7. Battery health summary
-        # -------------------------------------------------
         health_summary = self.build_health_summary(df)
 
         return {

@@ -9,19 +9,20 @@ from core.modelling.rul_soh_test import (
     RULSOHExperimentRunner,
 )
 
-from core.modelling.model_register import MODEL_REGISTRY
+from core.modelling.model_register import (
+    PHYSICAL_MODEL_REGISTRY,
+    AI_MODEL_REGISTRY,
+    HYBRID_MODEL_CLASS,
+)
 
 
 def render_modelling_module():
 
     st.title("🧠 Modelling & Prediction")
     st.caption(
-        "SOH/RUL prediction using physical degradation model, GRU model, and hybrid model."
+        "SOH/RUL prediction using a selected physical model and GRU neural network."
     )
 
-    # -------------------------------------------------
-    # Read global sidebar selections
-    # -------------------------------------------------
     dataset_id = st.session_state.get("global_dataset_id")
     unit_id = st.session_state.get("global_unit_id")
     train_ratio = st.session_state.get("global_train_ratio", 0.7)
@@ -30,39 +31,21 @@ def render_modelling_module():
         st.warning("Please select dataset and battery unit from the left sidebar.")
         return
 
-    if unit_id != "B0005":
-        st.info(
-            "Current SOH/RUL demo is configured for B0005 first. "
-            "Other cells can be enabled after validating the workflow."
-        )
-
     config_col, result_col = st.columns([1.15, 2.85])
 
-    # -------------------------------------------------
-    # Left: Model Configuration
-    # -------------------------------------------------
     with config_col:
         st.subheader("⚙ Model Configuration")
 
-        model_options = {
-            key: value["display_name"]
-            for key, value in MODEL_REGISTRY.items()
-        }
+        physical_model_key = st.selectbox(
+            "Physical model",
+            options=list(PHYSICAL_MODEL_REGISTRY.keys()),
+            format_func=lambda key: PHYSICAL_MODEL_REGISTRY[key]["display_name"],
+        )
 
-        default_models = [
-            key for key in [
-                "physical_capacity",
-                "gru",
-                "hybrid_physical_gru",
-            ]
-            if key in MODEL_REGISTRY
-        ]
-
-        selected_model_keys = st.multiselect(
-            "Select models to compare",
-            options=list(model_options.keys()),
-            default=default_models,
-            format_func=lambda key: model_options[key],
+        ai_model_key = st.selectbox(
+            "AI model",
+            options=["gru"],
+            format_func=lambda key: AI_MODEL_REGISTRY[key]["display_name"],
         )
 
         st.divider()
@@ -103,12 +86,7 @@ def render_modelling_module():
             use_container_width=True,
         )
 
-    # -------------------------------------------------
-    # Right: Data + Prediction Results
-    # -------------------------------------------------
     with result_col:
-
-        st.subheader("📊 Selected Aging Data")
 
         try:
             aging_df = get_aging_data(dataset_id, unit_id)
@@ -120,10 +98,54 @@ def render_modelling_module():
             st.warning("No aging data found for the selected battery.")
             return
 
+        config = RULSOHExperimentConfig(
+            eol_threshold=eol_threshold,
+            train_ratio=train_ratio,
+            window_size=window_size,
+            epochs=epochs,
+        )
+
+        runner = RULSOHExperimentRunner(config)
+
+        try:
+            prepared_df = runner.prepare_feature_preview(
+                aging_df=aging_df,
+                dataset_id=dataset_id,
+                unit_id=unit_id,
+            )
+        except Exception as e:
+            st.error(f"Failed to prepare feature data: {e}")
+            return
+
+        st.subheader("📊 Feature Data Used for Modelling")
+
+        feature_display_cols = [
+            "dataset_id",
+            "unit_id",
+            "cycle_index",
+            "cycle_type",
+            "capacity",
+            "soh",
+            "rul",
+            "capacity_fade",
+            "delta_soh",
+            "fade_rate",
+            "voltage_mean",
+            "voltage_min",
+            "voltage_max",
+            "temperature_mean",
+            "temperature_max",
+            "time_duration",
+        ]
+
+        existing_cols = [
+            col for col in feature_display_cols if col in prepared_df.columns
+        ]
+
         st.dataframe(
-            aging_df.head(200),
+            prepared_df[existing_cols].head(300),
             use_container_width=True,
-            height=220,
+            height=260,
         )
 
         st.divider()
@@ -131,29 +153,19 @@ def render_modelling_module():
         st.subheader("📈 SOH Prediction Comparison")
 
         if not run_button:
-            st.info("Click Run SOH/RUL Prediction to compare selected models.")
+            st.info("Click Run SOH/RUL Prediction to compare physical, GRU and hybrid models.")
             return
 
-        if not selected_model_keys:
-            st.warning("Please select at least one model.")
-            return
-
-        with st.spinner("Training and evaluating selected models..."):
-
-            config = RULSOHExperimentConfig(
-                eol_threshold=eol_threshold,
-                train_ratio=train_ratio,
-                window_size=window_size,
-                epochs=epochs,
-            )
-
-            runner = RULSOHExperimentRunner(config)
+        with st.spinner("Training physical model, GRU model and hybrid model..."):
 
             try:
                 output = runner.run(
                     aging_df=aging_df,
-                    selected_model_keys=selected_model_keys,
-                    model_registry=MODEL_REGISTRY,
+                    dataset_id=dataset_id,
+                    unit_id=unit_id,
+                    physical_model_class=PHYSICAL_MODEL_REGISTRY[physical_model_key]["class"],
+                    ai_model_class=AI_MODEL_REGISTRY[ai_model_key]["class"],
+                    hybrid_model_class=HYBRID_MODEL_CLASS,
                 )
             except Exception as e:
                 st.error(f"Model experiment failed: {e}")
@@ -163,9 +175,6 @@ def render_modelling_module():
         metrics_df = output["metrics"]
         health_summary = output["health_summary"]
 
-        # -------------------------------------------------
-        # SOH plot
-        # -------------------------------------------------
         fig_df = prediction_df.copy()
 
         true_df = fig_df[["cycle_index", "true_soh"]].drop_duplicates()
@@ -187,12 +196,11 @@ def render_modelling_module():
             x="cycle_index",
             y="SOH",
             color="Model",
-            markers=False,
-            title="SOH Prediction Comparison",
+            title="SOH Prediction: Physical Model vs GRU vs Hybrid",
         )
 
         fig.update_layout(
-            height=520,
+            height=500,
             xaxis_title="Cycle Index",
             yaxis_title="SOH",
             legend_title="Model",
@@ -200,9 +208,6 @@ def render_modelling_module():
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # -------------------------------------------------
-        # RUL plot
-        # -------------------------------------------------
         st.subheader("📉 RUL Prediction Comparison")
 
         rul_true_df = fig_df[["cycle_index", "true_rul"]].drop_duplicates()
@@ -224,8 +229,7 @@ def render_modelling_module():
             x="cycle_index",
             y="RUL",
             color="Model",
-            markers=False,
-            title="RUL Prediction Comparison",
+            title="RUL Prediction: Physical Model vs GRU vs Hybrid",
         )
 
         rul_fig.update_layout(
@@ -237,9 +241,6 @@ def render_modelling_module():
 
         st.plotly_chart(rul_fig, use_container_width=True)
 
-        # -------------------------------------------------
-        # Metrics
-        # -------------------------------------------------
         st.subheader("📏 Model Evaluation Metrics")
 
         metric_cols = [
@@ -260,44 +261,26 @@ def render_modelling_module():
             use_container_width=True,
         )
 
-        # -------------------------------------------------
-        # Battery expert health indicators
-        # -------------------------------------------------
         st.subheader("🔋 Battery Health Indicators")
 
         c1, c2, c3, c4 = st.columns(4)
 
         with c1:
-            st.metric(
-                "Latest SOH",
-                health_summary.get("Latest SOH"),
-            )
+            st.metric("Latest SOH", health_summary.get("Latest SOH"))
 
         with c2:
-            st.metric(
-                "Capacity Loss",
-                f"{health_summary.get('Capacity Loss (%)')}%",
-            )
+            st.metric("Capacity Loss", f"{health_summary.get('Capacity Loss (%)')}%")
 
         with c3:
-            st.metric(
-                "EOL Status",
-                health_summary.get("EOL Status"),
-            )
+            st.metric("EOL Status", health_summary.get("EOL Status"))
 
         with c4:
-            st.metric(
-                "Recent Fade Rate",
-                health_summary.get("Recent Avg Fade Rate"),
-            )
+            st.metric("Recent Fade Rate", health_summary.get("Recent Avg Fade Rate"))
 
         st.markdown("### Detailed Battery Performance Summary")
 
         summary_df = pd.DataFrame(
-            [
-                {"Indicator": key, "Value": value}
-                for key, value in health_summary.items()
-            ]
+            [{"Indicator": k, "Value": v} for k, v in health_summary.items()]
         )
 
         st.dataframe(
