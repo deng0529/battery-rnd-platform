@@ -355,6 +355,9 @@ class GRUBatteryModel:
 
         input_size = int(len(self.feature_cols))
 
+        print("DEBUG input_size =", input_size, type(input_size))
+        print("DEBUG feature_cols =", self.feature_cols)
+
         self.model = GRUNetwork(
             input_size=input_size,
             hidden_size=self.config.hidden_size,
