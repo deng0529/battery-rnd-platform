@@ -79,7 +79,7 @@ def render_modelling_module():
 
         window_size = st.slider(
             "GRU sequence window",
-            min_value=4,
+            min_value=5,
             max_value=30,
             value=10,
             step=5,
