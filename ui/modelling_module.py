@@ -233,7 +233,7 @@ def render_modelling_module():
         )
 
         rul_fig.update_layout(
-            height=420,
+            height=415,
             xaxis_title="Cycle Index",
             yaxis_title="RUL",
             legend_title="Model",
