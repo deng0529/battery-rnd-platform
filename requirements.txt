@@ -7,3 +7,5 @@ python-dotenv>=1.0.0
 scipy
 psycopg2-binary
 toml
+scikit-learn
+torch
