@@ -11,9 +11,9 @@ from core.data_service import (
     get_measurements,
     get_aging_data,
     get_impedance_data,
+    get_available_signals,
 )
 
-from side_bar_data_selection import get_available_signals
 def render_data_module():
 
     st.title("📊 Data System")
