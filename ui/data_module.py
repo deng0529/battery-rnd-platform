@@ -8,7 +8,6 @@ from core.data_service import (
     get_datasets,
     get_units,
     get_cycles,
-    get_available_signals,
     get_measurements,
     get_aging_data,
     get_impedance_data,
@@ -20,6 +19,9 @@ def render_data_module():
     st.title("📊 Data System")
     st.caption("Battery data browsing, preview and diagnostic analysis")
 
+    # -----------------------------
+    # Load basic database tables
+    # -----------------------------
     datasets = get_datasets()
 
     if datasets.empty:
@@ -27,25 +29,27 @@ def render_data_module():
         return
 
     # -----------------------------
-    # Sidebar controls
+    # Read global sidebar selections
+    # These are created in app.py via render_sidebar_data_selection()
     # -----------------------------
-    st.sidebar.header("Data Selection")
+    dataset_id = st.session_state.get("global_dataset_id")
+    unit_id = st.session_state.get("global_unit_id")
+    selected_cycle_type = st.session_state.get("global_cycle_type", "all")
+    cycle_index = st.session_state.get("global_cycle_index")
+    signal_name = st.session_state.get("global_signal_name")
 
-    dataset_id = st.sidebar.selectbox(
-        "Dataset",
-        datasets["dataset_id"].tolist(),
-    )
+    if dataset_id is None or unit_id is None or cycle_index is None:
+        st.warning("Please select dataset, battery unit and cycle from the left sidebar.")
+        return
 
+    # -----------------------------
+    # Load units and cycles based on global selection
+    # -----------------------------
     units = get_units(dataset_id)
 
     if units.empty:
         st.warning("No battery units found for this dataset.")
         return
-
-    unit_id = st.sidebar.selectbox(
-        "Battery Unit / Cell",
-        units["unit_id"].tolist(),
-    )
 
     cycles = get_cycles(dataset_id, unit_id)
 
@@ -53,39 +57,29 @@ def render_data_module():
         st.warning("No cycles found for this unit.")
         return
 
-    cycle_types = ["all"] + sorted(cycles["cycle_type"].dropna().unique().tolist())
-    selected_cycle_type = st.sidebar.selectbox("Cycle Type", cycle_types)
-
     filtered_cycles = cycles.copy()
+
     if selected_cycle_type != "all":
-        filtered_cycles = filtered_cycles[filtered_cycles["cycle_type"] == selected_cycle_type]
+        filtered_cycles = filtered_cycles[
+            filtered_cycles["cycle_type"] == selected_cycle_type
+        ]
 
-    cycle_index = st.sidebar.selectbox(
-        "Cycle",
-        filtered_cycles["cycle_index"].tolist(),
-    )
-
-    signals = get_available_signals(dataset_id, unit_id, cycle_index)
-
-    if not signals:
-        st.sidebar.warning("No measurement signals found for this cycle.")
-        signal_name = None
-    else:
-        signal_name = st.sidebar.selectbox("Signal", signals)
+    if filtered_cycles.empty:
+        st.warning("No cycles found for the selected cycle type.")
+        return
 
     # -----------------------------
-    # Dataset info
+    # Dataset and unit info
     # -----------------------------
     dataset_row = datasets[datasets["dataset_id"] == dataset_id].iloc[0]
     unit_row = units[units["unit_id"] == unit_id].iloc[0]
 
     # -----------------------------
-    # Copilot Result Panel（核心）
+    # Copilot Result Panel
     # -----------------------------
     if "copilot_result" in st.session_state:
         copilot_result = st.session_state["copilot_result"]
 
-        # ⚠️ 关键修复：这里必须是 "data"
         if copilot_result.get("target_module") == "data":
 
             context = {
@@ -107,7 +101,11 @@ def render_data_module():
                     st.subheader(result.get("title", "Copilot Result"))
 
                 with col_clear:
-                    if st.button("Clear", key="clear_data_copilot_result", use_container_width=True):
+                    if st.button(
+                        "Clear",
+                        key="clear_data_copilot_result",
+                        use_container_width=True,
+                    ):
                         if "copilot_result" in st.session_state:
                             del st.session_state["copilot_result"]
                         if "copilot_prompt" in st.session_state:
@@ -140,11 +138,21 @@ def render_data_module():
                         st.warning("No aging data found.")
                     else:
                         if "capacity" in df.columns:
-                            fig = px.line(df, x="cycle_index", y="capacity", title="Capacity")
+                            fig = px.line(
+                                df,
+                                x="cycle_index",
+                                y="capacity",
+                                title="Capacity",
+                            )
                             st.plotly_chart(fig, use_container_width=True)
 
                         if "soh" in df.columns:
-                            fig = px.line(df, x="cycle_index", y="soh", title="SOH")
+                            fig = px.line(
+                                df,
+                                x="cycle_index",
+                                y="soh",
+                                title="SOH",
+                            )
                             st.plotly_chart(fig, use_container_width=True)
 
                         st.dataframe(df, use_container_width=True)
@@ -185,6 +193,7 @@ def render_data_module():
     with tab_overview:
         st.subheader("Dataset Information")
 
+        st.write("**Dataset ID:**", dataset_id)
         st.write("**Dataset Name:**", dataset_row.get("dataset_name"))
         st.write("**Source:**", dataset_row.get("source_name"))
         st.write("**Type:**", dataset_row.get("source_type"))
@@ -200,13 +209,22 @@ def render_data_module():
         st.dataframe(unit_info, use_container_width=True)
 
         st.subheader("Cycle Summary")
-        st.dataframe(cycles, use_container_width=True)
+
+        if selected_cycle_type == "all":
+            st.dataframe(cycles, use_container_width=True)
+        else:
+            st.dataframe(filtered_cycles, use_container_width=True)
 
     # -----------------------------
     # Cycle Curve
     # -----------------------------
     with tab_curve:
         st.subheader("Selected Cycle Signal Curve")
+
+        st.write("**Dataset:**", dataset_id)
+        st.write("**Battery Unit:**", unit_id)
+        st.write("**Cycle:**", cycle_index)
+        st.write("**Signal:**", signal_name)
 
         if signal_name is None:
             st.warning("No signal available for the selected cycle.")
@@ -242,11 +260,30 @@ def render_data_module():
             st.warning("No discharge aging data found.")
         else:
             if "capacity" in aging_df.columns:
-                fig = px.line(aging_df, x="cycle_index", y="capacity")
+                fig = px.line(
+                    aging_df,
+                    x="cycle_index",
+                    y="capacity",
+                    title=f"{unit_id} Capacity Trend",
+                )
                 st.plotly_chart(fig, use_container_width=True)
 
             if "soh" in aging_df.columns:
-                fig = px.line(aging_df, x="cycle_index", y="soh")
+                fig = px.line(
+                    aging_df,
+                    x="cycle_index",
+                    y="soh",
+                    title=f"{unit_id} SOH Trend",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            if "rul" in aging_df.columns:
+                fig = px.line(
+                    aging_df,
+                    x="cycle_index",
+                    y="rul",
+                    title=f"{unit_id} RUL Trend",
+                )
                 st.plotly_chart(fig, use_container_width=True)
 
             st.dataframe(aging_df, use_container_width=True)
@@ -263,6 +300,25 @@ def render_data_module():
             st.info("No impedance data found.")
         else:
             st.dataframe(imp_df, use_container_width=True)
+
+            numeric_cols = imp_df.select_dtypes(include="number").columns.tolist()
+
+            if "cycle_index" in numeric_cols:
+                plot_cols = [c for c in numeric_cols if c != "cycle_index"]
+
+                if plot_cols:
+                    selected_imp_signal = st.selectbox(
+                        "Select impedance signal to plot",
+                        plot_cols,
+                    )
+
+                    fig = px.line(
+                        imp_df,
+                        x="cycle_index",
+                        y=selected_imp_signal,
+                        title=f"{unit_id} | {selected_imp_signal}",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
     # -----------------------------
     # Raw Data
@@ -288,7 +344,10 @@ def render_data_module():
             st.dataframe(units, use_container_width=True)
 
         elif raw_option == "battery_cycles":
-            st.dataframe(cycles, use_container_width=True)
+            if selected_cycle_type == "all":
+                st.dataframe(cycles, use_container_width=True)
+            else:
+                st.dataframe(filtered_cycles, use_container_width=True)
 
         elif raw_option == "battery_measurements":
             if signal_name is not None:
@@ -303,4 +362,7 @@ def render_data_module():
                 st.warning("No signal selected.")
 
         elif raw_option == "battery_impedance":
-            st.dataframe(get_impedance_data(dataset_id, unit_id), use_container_width=True)
+            st.dataframe(
+                get_impedance_data(dataset_id, unit_id),
+                use_container_width=True,
+            )
