@@ -21,9 +21,7 @@ from core.modelling.model_register import (
 def render_modelling_module():
 
     st.title("🧠 Modelling & Prediction")
-    st.caption(
-        "SOH/RUL prediction using discharge model features from Supabase."
-    )
+    st.caption("SOH/RUL prediction using discharge model features from Supabase.")
 
     dataset_id = st.session_state.get("global_dataset_id")
     unit_id = st.session_state.get("global_unit_id")
@@ -35,9 +33,6 @@ def render_modelling_module():
 
     config_col, result_col = st.columns([1.05, 2.95])
 
-    # =====================================================
-    # Left: model selection only
-    # =====================================================
     with config_col:
         st.subheader("⚙ Model Selection")
 
@@ -47,9 +42,10 @@ def render_modelling_module():
             format_func=lambda key: PHYSICAL_MODEL_REGISTRY[key]["display_name"],
         )
 
-        ai_model_key = st.selectbox(
-            "AI model",
-            options=["gru"],
+        ai_model_keys = st.multiselect(
+            "AI model(s)",
+            options=list(AI_MODEL_REGISTRY.keys()),
+            default=["mlp", "residual_mlp"],
             format_func=lambda key: AI_MODEL_REGISTRY[key]["display_name"],
         )
 
@@ -58,9 +54,6 @@ def render_modelling_module():
             use_container_width=True,
         )
 
-    # =====================================================
-    # Right: variables + results
-    # =====================================================
     with result_col:
 
         try:
@@ -89,49 +82,63 @@ def render_modelling_module():
             st.error(f"Failed to prepare model features: {e}")
             return
 
-        # -------------------------------------------------
-        # One clean variable table only
-        # -------------------------------------------------
-        st.subheader("📊 Model Variables")
+        st.subheader("📊 Model Variables and Example Data")
 
-        variables_df = pd.DataFrame(
-            [{"Variable Type": "Input Feature", "Variable Name": col} for col in INPUT_FEATURES]
-            +
-            [{"Variable Type": "Output Label", "Variable Name": col} for col in OUTPUT_LABELS]
-        )
+        example_row = prepared_df.iloc[0]
+
+        max_len = max(len(INPUT_FEATURES), len(OUTPUT_LABELS))
+        rows = []
+
+        for i in range(max_len):
+            input_name = INPUT_FEATURES[i] if i < len(INPUT_FEATURES) else ""
+            output_name = OUTPUT_LABELS[i] if i < len(OUTPUT_LABELS) else ""
+
+            rows.append({
+                "输入特征": input_name,
+                "输入示例值": example_row.get(input_name, ""),
+                "输出": output_name,
+                "输出示例值": example_row.get(output_name, ""),
+            })
+
+        variable_df = pd.DataFrame(rows)
 
         st.dataframe(
-            variables_df,
+            variable_df,
             use_container_width=True,
-            height=360,
+            height=420,
         )
 
         st.divider()
 
-        # -------------------------------------------------
-        # Results area
-        # -------------------------------------------------
         st.subheader("📈 Prediction Results")
 
         st.caption(
-            f"Training/testing split is cycle-based: "
-            f"{len(train_df)} training cycles "
+            f"Cycle-based split: {len(train_df)} training cycles "
             f"({int(train_df['cycle_index'].min())}–{int(train_df['cycle_index'].max())}) "
             f"and {len(test_df)} testing cycles "
             f"({int(test_df['cycle_index'].min())}–{int(test_df['cycle_index'].max())}), "
-            f"using train_ratio={train_ratio}."
+            f"train_ratio={train_ratio}."
         )
 
         if not run_button:
-            st.info("Click Run SOH/RUL Prediction to compare physical, GRU and hybrid models.")
+            st.info("Select models and click Run SOH/RUL Prediction.")
             return
 
-        with st.spinner("Training physical model, GRU model and hybrid model..."):
+        if not ai_model_keys:
+            st.warning("Please select at least one AI model.")
+            return
+
+        ai_model_classes = [
+            AI_MODEL_REGISTRY[key]["class"]
+            for key in ai_model_keys
+        ]
+
+        with st.spinner("Training selected models..."):
             try:
                 output = runner.run(
                     feature_df=feature_df,
                     physical_model_class=PHYSICAL_MODEL_REGISTRY[physical_model_key]["class"],
-                    ai_model_class=AI_MODEL_REGISTRY[ai_model_key]["class"],
+                    ai_model_classes=ai_model_classes,
                     hybrid_model_class=HYBRID_MODEL_CLASS,
                 )
             except Exception as e:
@@ -142,21 +149,13 @@ def render_modelling_module():
         metrics_df = output["metrics"]
         health_summary = output["health_summary"]
 
-        # -------------------------------------------------
-        # SOH plot
-        # -------------------------------------------------
         fig_df = prediction_df.copy()
 
         true_soh_df = fig_df[["cycle_index", "true_soh"]].drop_duplicates()
         true_soh_df = true_soh_df.rename(columns={"true_soh": "SOH"})
         true_soh_df["Model"] = "True SOH"
 
-        pred_soh_df = fig_df.rename(
-            columns={
-                "pred_soh": "SOH",
-                "model": "Model",
-            }
-        )
+        pred_soh_df = fig_df.rename(columns={"pred_soh": "SOH", "model": "Model"})
         pred_soh_df = pred_soh_df[["cycle_index", "SOH", "Model"]]
 
         soh_plot_df = pd.concat([true_soh_df, pred_soh_df], ignore_index=True)
@@ -169,30 +168,15 @@ def render_modelling_module():
             title="SOH Prediction Comparison",
         )
 
-        soh_fig.update_layout(
-            height=480,
-            xaxis_title="Cycle Index",
-            yaxis_title="SOH",
-            legend_title="Model",
-        )
-
         st.plotly_chart(soh_fig, use_container_width=True)
 
-        # -------------------------------------------------
-        # RUL plot
-        # -------------------------------------------------
         st.subheader("📉 RUL Prediction Comparison")
 
         true_rul_df = fig_df[["cycle_index", "true_rul"]].drop_duplicates()
         true_rul_df = true_rul_df.rename(columns={"true_rul": "RUL"})
         true_rul_df["Model"] = "True RUL"
 
-        pred_rul_df = fig_df.rename(
-            columns={
-                "pred_rul": "RUL",
-                "model": "Model",
-            }
-        )
+        pred_rul_df = fig_df.rename(columns={"pred_rul": "RUL", "model": "Model"})
         pred_rul_df = pred_rul_df[["cycle_index", "RUL", "Model"]]
 
         rul_plot_df = pd.concat([true_rul_df, pred_rul_df], ignore_index=True)
@@ -205,28 +189,11 @@ def render_modelling_module():
             title="RUL Prediction Comparison",
         )
 
-        rul_fig.update_layout(
-            height=420,
-            xaxis_title="Cycle Index",
-            yaxis_title="RUL",
-            legend_title="Model",
-        )
-
         st.plotly_chart(rul_fig, use_container_width=True)
 
-        # -------------------------------------------------
-        # Metrics
-        # -------------------------------------------------
         st.subheader("📏 Model Evaluation Metrics")
+        st.dataframe(metrics_df, use_container_width=True)
 
-        st.dataframe(
-            metrics_df,
-            use_container_width=True,
-        )
-
-        # -------------------------------------------------
-        # Battery health indicators
-        # -------------------------------------------------
         st.subheader("🔋 Battery Health Indicators")
 
         c1, c2, c3 = st.columns(3)
@@ -244,7 +211,4 @@ def render_modelling_module():
             [{"Indicator": k, "Value": v} for k, v in health_summary.items()]
         )
 
-        st.dataframe(
-            summary_df,
-            use_container_width=True,
-        )
+        st.dataframe(summary_df, use_container_width=True)

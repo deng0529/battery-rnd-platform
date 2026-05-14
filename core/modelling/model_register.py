@@ -2,7 +2,9 @@ from core.modelling.rul_soh_test import (
     CapacityDegradationPhysicalModel,
     ExponentialPhysicalModel,
     GRUBatteryModel,
-    HybridPhysicalGRUModel,
+    MLPBatteryModel,
+    ResidualMLPBatteryModel,
+    HybridPhysicalAIModel,
 )
 
 
@@ -19,11 +21,19 @@ PHYSICAL_MODEL_REGISTRY = {
 
 
 AI_MODEL_REGISTRY = {
+    "mlp": {
+        "display_name": "MLP",
+        "class": MLPBatteryModel,
+    },
+    "residual_mlp": {
+        "display_name": "Residual MLP",
+        "class": ResidualMLPBatteryModel,
+    },
     "gru": {
-        "display_name": "GRU neural network",
+        "display_name": "GRU",
         "class": GRUBatteryModel,
     },
 }
 
 
-HYBRID_MODEL_CLASS = HybridPhysicalGRUModel
+HYBRID_MODEL_CLASS = HybridPhysicalAIModel
