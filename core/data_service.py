@@ -189,3 +189,15 @@ def get_capacity_summary(dataset_id: str, unit_id: str) -> pd.DataFrame:
     existing_cols = [c for c in cols if c in aging_df.columns]
 
     return aging_df[existing_cols].copy()
+
+def get_model_features(dataset_id: str, unit_id: str) -> pd.DataFrame:
+    supabase = get_supabase_client()
+    res = (
+        supabase.table("battery_model_features")
+        .select("*")
+        .eq("dataset_id", dataset_id)
+        .eq("unit_id", unit_id)
+        .order("cycle_index")
+        .execute()
+    )
+    return pd.DataFrame(res.data)

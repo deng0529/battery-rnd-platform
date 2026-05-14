@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-from core.data_service import get_aging_data
+from core.data_service import get_model_features
 
 from core.modelling.rul_soh_test import (
     RULSOHExperimentConfig,
@@ -20,7 +20,7 @@ def render_modelling_module():
 
     st.title("🧠 Modelling & Prediction")
     st.caption(
-        "SOH/RUL prediction using a selected physical model and GRU neural network."
+        "SOH/RUL prediction using discharge model features from Supabase."
     )
 
     dataset_id = st.session_state.get("global_dataset_id")
@@ -31,10 +31,10 @@ def render_modelling_module():
         st.warning("Please select dataset and battery unit from the left sidebar.")
         return
 
-    config_col, result_col = st.columns([1.15, 2.85])
+    config_col, result_col = st.columns([1.05, 2.95])
 
     with config_col:
-        st.subheader("⚙ Model Configuration")
+        st.subheader("⚙ Model Selection")
 
         physical_model_key = st.selectbox(
             "Physical model",
@@ -48,39 +48,6 @@ def render_modelling_module():
             format_func=lambda key: AI_MODEL_REGISTRY[key]["display_name"],
         )
 
-        st.divider()
-
-        st.markdown("### Training Setup")
-
-        eol_threshold = st.slider(
-            "EOL SOH threshold",
-            min_value=0.6,
-            max_value=0.9,
-            value=0.7,
-            step=0.05,
-        )
-
-        window_size = st.slider(
-            "GRU sequence window",
-            min_value=5,
-            max_value=30,
-            value=10,
-            step=5,
-        )
-
-        epochs = st.slider(
-            "Training epochs",
-            min_value=50,
-            max_value=500,
-            value=250,
-            step=50,
-        )
-
-        st.markdown("### Current Data")
-        st.write("**Dataset:**", dataset_id)
-        st.write("**Battery Unit:**", unit_id)
-        st.write("**Training Ratio:**", train_ratio)
-
         run_button = st.button(
             "▶ Run SOH/RUL Prediction",
             use_container_width=True,
@@ -89,59 +56,58 @@ def render_modelling_module():
     with result_col:
 
         try:
-            aging_df = get_aging_data(dataset_id, unit_id)
-
+            feature_df = get_model_features(dataset_id, unit_id)
         except Exception as e:
-            st.error(f"Failed to load aging data: {e}")
+            st.error(f"Failed to load battery_model_features: {e}")
             return
 
-        if aging_df.empty:
-            st.warning("No aging data found for the selected battery.")
+        if feature_df.empty:
+            st.warning("No model feature data found in Supabase.")
             return
 
         config = RULSOHExperimentConfig(
-            eol_threshold=eol_threshold,
             train_ratio=train_ratio,
-            window_size=window_size,
-            epochs=epochs,
+            eol_threshold=0.7,
+            window_size=10,
+            epochs=250,
         )
 
         runner = RULSOHExperimentRunner(config)
 
         try:
-            prepared_df = runner.prepare_feature_preview(
-                aging_df=aging_df,
-                dataset_id=dataset_id,
-                unit_id=unit_id,
-            )
+            prepared_df = runner.prepare_feature_preview(feature_df)
+            train_df, test_df = runner.train_test_split_by_time(prepared_df)
         except Exception as e:
-            st.error(f"Failed to prepare feature data: {e}")
+            st.error(f"Failed to prepare model features: {e}")
             return
 
-        st.subheader("📊 Feature Data Used for Modelling")
+        st.subheader("📊 Model Feature Table from Supabase")
 
-        feature_display_cols = [
+        input_features = [
+            "cycle_index",
+            "voltage_mean",
+            "voltage_std",
+            "voltage_min",
+            "voltage_max",
+            "voltage_drop",
+            "current_mean",
+            "current_std",
+            "temperature_mean",
+            "temperature_max",
+            "temperature_rise",
+            "time_duration",
+        ]
+
+        output_labels = ["soh", "rul"]
+
+        display_cols = [
             "dataset_id",
             "unit_id",
             "cycle_index",
             "cycle_type",
-            "capacity",
-            "soh",
-            "rul",
-            "capacity_fade",
-            "delta_soh",
-            "fade_rate",
-            "voltage_mean",
-            "voltage_min",
-            "voltage_max",
-            "temperature_mean",
-            "temperature_max",
-            "time_duration",
-        ]
+        ] + input_features + output_labels
 
-        existing_cols = [
-            col for col in feature_display_cols if col in prepared_df.columns
-        ]
+        existing_cols = [c for c in display_cols if c in prepared_df.columns]
 
         st.dataframe(
             prepared_df[existing_cols].head(300),
@@ -149,9 +115,45 @@ def render_modelling_module():
             height=260,
         )
 
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown("### Input Features")
+            st.dataframe(
+                pd.DataFrame({"Input Feature": input_features}),
+                use_container_width=True,
+                height=260,
+            )
+
+        with c2:
+            st.markdown("### Output Labels")
+            st.dataframe(
+                pd.DataFrame({"Output Label": output_labels}),
+                use_container_width=True,
+                height=120,
+            )
+
+            st.markdown("### Train / Test Split")
+            split_info = pd.DataFrame(
+                [
+                    {
+                        "Part": "Training",
+                        "Rows": len(train_df),
+                        "Cycle Range": f"{int(train_df['cycle_index'].min())} - {int(train_df['cycle_index'].max())}",
+                    },
+                    {
+                        "Part": "Testing",
+                        "Rows": len(test_df),
+                        "Cycle Range": f"{int(test_df['cycle_index'].min())} - {int(test_df['cycle_index'].max())}",
+                    },
+                ]
+            )
+
+            st.dataframe(split_info, use_container_width=True)
+
         st.divider()
 
-        st.subheader("📈 SOH Prediction Comparison")
+        st.subheader("📈 Prediction Results")
 
         if not run_button:
             st.info("Click Run SOH/RUL Prediction to compare physical, GRU and hybrid models.")
@@ -161,9 +163,7 @@ def render_modelling_module():
 
             try:
                 output = runner.run(
-                    aging_df=aging_df,
-                    dataset_id=dataset_id,
-                    unit_id=unit_id,
+                    feature_df=feature_df,
                     physical_model_class=PHYSICAL_MODEL_REGISTRY[physical_model_key]["class"],
                     ai_model_class=AI_MODEL_REGISTRY[ai_model_key]["class"],
                     hybrid_model_class=HYBRID_MODEL_CLASS,
@@ -182,12 +182,7 @@ def render_modelling_module():
         true_df = true_df.rename(columns={"true_soh": "SOH"})
         true_df["Model"] = "True SOH"
 
-        pred_df = fig_df.rename(
-            columns={
-                "pred_soh": "SOH",
-                "model": "Model",
-            }
-        )
+        pred_df = fig_df.rename(columns={"pred_soh": "SOH", "model": "Model"})
         pred_df = pred_df[["cycle_index", "SOH", "Model"]]
 
         plot_df = pd.concat([true_df, pred_df], ignore_index=True)
@@ -197,14 +192,7 @@ def render_modelling_module():
             x="cycle_index",
             y="SOH",
             color="Model",
-            title="SOH Prediction: Physical Model vs GRU vs Hybrid",
-        )
-
-        fig.update_layout(
-            height=500,
-            xaxis_title="Cycle Index",
-            yaxis_title="SOH",
-            legend_title="Model",
+            title="SOH Prediction Comparison",
         )
 
         st.plotly_chart(fig, use_container_width=True)
@@ -215,12 +203,7 @@ def render_modelling_module():
         rul_true_df = rul_true_df.rename(columns={"true_rul": "RUL"})
         rul_true_df["Model"] = "True RUL"
 
-        rul_pred_df = fig_df.rename(
-            columns={
-                "pred_rul": "RUL",
-                "model": "Model",
-            }
-        )
+        rul_pred_df = fig_df.rename(columns={"pred_rul": "RUL", "model": "Model"})
         rul_pred_df = rul_pred_df[["cycle_index", "RUL", "Model"]]
 
         rul_plot_df = pd.concat([rul_true_df, rul_pred_df], ignore_index=True)
@@ -230,61 +213,29 @@ def render_modelling_module():
             x="cycle_index",
             y="RUL",
             color="Model",
-            title="RUL Prediction: Physical Model vs GRU vs Hybrid",
-        )
-
-        rul_fig.update_layout(
-            height=415,
-            xaxis_title="Cycle Index",
-            yaxis_title="RUL",
-            legend_title="Model",
+            title="RUL Prediction Comparison",
         )
 
         st.plotly_chart(rul_fig, use_container_width=True)
 
         st.subheader("📏 Model Evaluation Metrics")
-
-        metric_cols = [
-            "Model",
-            "SOH RMSE",
-            "SOH MAE",
-            "RUL RMSE",
-            "RUL MAE",
-            "RUL MAPE (%)",
-        ]
-
-        existing_metric_cols = [
-            col for col in metric_cols if col in metrics_df.columns
-        ]
-
-        st.dataframe(
-            metrics_df[existing_metric_cols],
-            use_container_width=True,
-        )
+        st.dataframe(metrics_df, use_container_width=True)
 
         st.subheader("🔋 Battery Health Indicators")
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
 
         with c1:
             st.metric("Latest SOH", health_summary.get("Latest SOH"))
 
         with c2:
-            st.metric("Capacity Loss", f"{health_summary.get('Capacity Loss (%)')}%")
-
-        with c3:
             st.metric("EOL Status", health_summary.get("EOL Status"))
 
-        with c4:
-            st.metric("Recent Fade Rate", health_summary.get("Recent Avg Fade Rate"))
-
-        st.markdown("### Detailed Battery Performance Summary")
+        with c3:
+            st.metric("EOL Cycle", health_summary.get("EOL Cycle"))
 
         summary_df = pd.DataFrame(
             [{"Indicator": k, "Value": v} for k, v in health_summary.items()]
         )
 
-        st.dataframe(
-            summary_df,
-            use_container_width=True,
-        )
+        st.dataframe(summary_df, use_container_width=True)
