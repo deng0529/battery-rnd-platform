@@ -7,6 +7,8 @@ from core.data_service import get_model_features
 from core.modelling.rul_soh_test import (
     RULSOHExperimentConfig,
     RULSOHExperimentRunner,
+    INPUT_FEATURES,
+    OUTPUT_LABELS,
 )
 
 from core.modelling.model_register import (
@@ -33,6 +35,9 @@ def render_modelling_module():
 
     config_col, result_col = st.columns([1.05, 2.95])
 
+    # =====================================================
+    # Left: model selection only
+    # =====================================================
     with config_col:
         st.subheader("⚙ Model Selection")
 
@@ -53,6 +58,9 @@ def render_modelling_module():
             use_container_width=True,
         )
 
+    # =====================================================
+    # Right: variables + results
+    # =====================================================
     with result_col:
 
         try:
@@ -81,97 +89,44 @@ def render_modelling_module():
             st.error(f"Failed to prepare model features: {e}")
             return
 
-        st.subheader("📊 Model Feature Table from Supabase")
+        # -------------------------------------------------
+        # One clean variable table only
+        # -------------------------------------------------
+        st.subheader("📊 Model Variables")
 
-        input_features = [
-            "cycle_index",
-            "voltage_mean",
-            "voltage_std",
-            "voltage_min",
-            "voltage_max",
-            "voltage_drop",
-            "current_mean",
-            "current_std",
-            "temperature_mean",
-            "temperature_max",
-            "temperature_rise",
-            "time_duration",
-        ]
-
-        output_labels = ["soh", "rul"]
-
-        display_cols = [
-                           "dataset_id",
-                           "unit_id",
-                           "cycle_type",
-                       ] + input_features + output_labels
-
-        existing_cols = []
-        for col in display_cols:
-            if col in prepared_df.columns and col not in existing_cols:
-                existing_cols.append(col)
-
-        feature_preview_df = prepared_df[existing_cols].copy()
-        feature_preview_df = feature_preview_df.loc[:, ~feature_preview_df.columns.duplicated()]
-
-        st.dataframe(
-            feature_preview_df.head(300),
-            use_container_width=True,
-            height=260,
+        variables_df = pd.DataFrame(
+            [{"Variable Type": "Input Feature", "Variable Name": col} for col in INPUT_FEATURES]
+            +
+            [{"Variable Type": "Output Label", "Variable Name": col} for col in OUTPUT_LABELS]
         )
 
         st.dataframe(
-            prepared_df[existing_cols].head(300),
+            variables_df,
             use_container_width=True,
-            height=260,
+            height=360,
         )
-
-        c1, c2 = st.columns(2)
-
-        with c1:
-            st.markdown("### Input Features")
-            st.dataframe(
-                pd.DataFrame({"Input Feature": input_features}),
-                use_container_width=True,
-                height=260,
-            )
-
-        with c2:
-            st.markdown("### Output Labels")
-            st.dataframe(
-                pd.DataFrame({"Output Label": output_labels}),
-                use_container_width=True,
-                height=120,
-            )
-
-            st.markdown("### Train / Test Split")
-            split_info = pd.DataFrame(
-                [
-                    {
-                        "Part": "Training",
-                        "Rows": len(train_df),
-                        "Cycle Range": f"{int(train_df['cycle_index'].min())} - {int(train_df['cycle_index'].max())}",
-                    },
-                    {
-                        "Part": "Testing",
-                        "Rows": len(test_df),
-                        "Cycle Range": f"{int(test_df['cycle_index'].min())} - {int(test_df['cycle_index'].max())}",
-                    },
-                ]
-            )
-
-            st.dataframe(split_info, use_container_width=True)
 
         st.divider()
 
+        # -------------------------------------------------
+        # Results area
+        # -------------------------------------------------
         st.subheader("📈 Prediction Results")
+
+        st.caption(
+            f"Training/testing split is cycle-based: "
+            f"{len(train_df)} training cycles "
+            f"({int(train_df['cycle_index'].min())}–{int(train_df['cycle_index'].max())}) "
+            f"and {len(test_df)} testing cycles "
+            f"({int(test_df['cycle_index'].min())}–{int(test_df['cycle_index'].max())}), "
+            f"using train_ratio={train_ratio}."
+        )
 
         if not run_button:
             st.info("Click Run SOH/RUL Prediction to compare physical, GRU and hybrid models.")
             return
 
         with st.spinner("Training physical model, GRU model and hybrid model..."):
-
             try:
                 output = runner.run(
                     feature_df=feature_df,
@@ -187,37 +142,60 @@ def render_modelling_module():
         metrics_df = output["metrics"]
         health_summary = output["health_summary"]
 
+        # -------------------------------------------------
+        # SOH plot
+        # -------------------------------------------------
         fig_df = prediction_df.copy()
 
-        true_df = fig_df[["cycle_index", "true_soh"]].drop_duplicates()
-        true_df = true_df.rename(columns={"true_soh": "SOH"})
-        true_df["Model"] = "True SOH"
+        true_soh_df = fig_df[["cycle_index", "true_soh"]].drop_duplicates()
+        true_soh_df = true_soh_df.rename(columns={"true_soh": "SOH"})
+        true_soh_df["Model"] = "True SOH"
 
-        pred_df = fig_df.rename(columns={"pred_soh": "SOH", "model": "Model"})
-        pred_df = pred_df[["cycle_index", "SOH", "Model"]]
+        pred_soh_df = fig_df.rename(
+            columns={
+                "pred_soh": "SOH",
+                "model": "Model",
+            }
+        )
+        pred_soh_df = pred_soh_df[["cycle_index", "SOH", "Model"]]
 
-        plot_df = pd.concat([true_df, pred_df], ignore_index=True)
+        soh_plot_df = pd.concat([true_soh_df, pred_soh_df], ignore_index=True)
 
-        fig = px.line(
-            plot_df,
+        soh_fig = px.line(
+            soh_plot_df,
             x="cycle_index",
             y="SOH",
             color="Model",
             title="SOH Prediction Comparison",
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        soh_fig.update_layout(
+            height=480,
+            xaxis_title="Cycle Index",
+            yaxis_title="SOH",
+            legend_title="Model",
+        )
 
+        st.plotly_chart(soh_fig, use_container_width=True)
+
+        # -------------------------------------------------
+        # RUL plot
+        # -------------------------------------------------
         st.subheader("📉 RUL Prediction Comparison")
 
-        rul_true_df = fig_df[["cycle_index", "true_rul"]].drop_duplicates()
-        rul_true_df = rul_true_df.rename(columns={"true_rul": "RUL"})
-        rul_true_df["Model"] = "True RUL"
+        true_rul_df = fig_df[["cycle_index", "true_rul"]].drop_duplicates()
+        true_rul_df = true_rul_df.rename(columns={"true_rul": "RUL"})
+        true_rul_df["Model"] = "True RUL"
 
-        rul_pred_df = fig_df.rename(columns={"pred_rul": "RUL", "model": "Model"})
-        rul_pred_df = rul_pred_df[["cycle_index", "RUL", "Model"]]
+        pred_rul_df = fig_df.rename(
+            columns={
+                "pred_rul": "RUL",
+                "model": "Model",
+            }
+        )
+        pred_rul_df = pred_rul_df[["cycle_index", "RUL", "Model"]]
 
-        rul_plot_df = pd.concat([rul_true_df, rul_pred_df], ignore_index=True)
+        rul_plot_df = pd.concat([true_rul_df, pred_rul_df], ignore_index=True)
 
         rul_fig = px.line(
             rul_plot_df,
@@ -227,11 +205,28 @@ def render_modelling_module():
             title="RUL Prediction Comparison",
         )
 
+        rul_fig.update_layout(
+            height=420,
+            xaxis_title="Cycle Index",
+            yaxis_title="RUL",
+            legend_title="Model",
+        )
+
         st.plotly_chart(rul_fig, use_container_width=True)
 
+        # -------------------------------------------------
+        # Metrics
+        # -------------------------------------------------
         st.subheader("📏 Model Evaluation Metrics")
-        st.dataframe(metrics_df, use_container_width=True)
 
+        st.dataframe(
+            metrics_df,
+            use_container_width=True,
+        )
+
+        # -------------------------------------------------
+        # Battery health indicators
+        # -------------------------------------------------
         st.subheader("🔋 Battery Health Indicators")
 
         c1, c2, c3 = st.columns(3)
@@ -249,4 +244,7 @@ def render_modelling_module():
             [{"Indicator": k, "Value": v} for k, v in health_summary.items()]
         )
 
-        st.dataframe(summary_df, use_container_width=True)
+        st.dataframe(
+            summary_df,
+            use_container_width=True,
+        )
