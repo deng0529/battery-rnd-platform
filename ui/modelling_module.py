@@ -101,13 +101,24 @@ def render_modelling_module():
         output_labels = ["soh", "rul"]
 
         display_cols = [
-            "dataset_id",
-            "unit_id",
-            "cycle_index",
-            "cycle_type",
-        ] + input_features + output_labels
+                           "dataset_id",
+                           "unit_id",
+                           "cycle_type",
+                       ] + input_features + output_labels
 
-        existing_cols = [c for c in display_cols if c in prepared_df.columns]
+        existing_cols = []
+        for col in display_cols:
+            if col in prepared_df.columns and col not in existing_cols:
+                existing_cols.append(col)
+
+        feature_preview_df = prepared_df[existing_cols].copy()
+        feature_preview_df = feature_preview_df.loc[:, ~feature_preview_df.columns.duplicated()]
+
+        st.dataframe(
+            feature_preview_df.head(300),
+            use_container_width=True,
+            height=260,
+        )
 
         st.dataframe(
             prepared_df[existing_cols].head(300),
